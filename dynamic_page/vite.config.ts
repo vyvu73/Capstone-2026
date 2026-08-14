@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// Port 3000 keeps the CLAUDE.md screenshot workflow intact:
-//   node screenshot.mjs http://localhost:3000
+// The page is served on 3000; requests to /api are forwarded to the Express
+// server on 4000, so the browser only ever talks to one origin.
 export default defineConfig({
   plugins: [react()],
   server: {

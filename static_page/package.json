@@ -2,7 +2,7 @@
   "name": "static_page",
   "private": true,
   "type": "module",
-  "dependencies": {
-    "puppeteer": "^25.6.0"
+  "scripts": {
+    "start": "node serve.mjs"
   }
 }

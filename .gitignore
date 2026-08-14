@@ -1,0 +1,14 @@
+# Dependencies and build output
+node_modules/
+dist/
+
+# Secrets — copy dynamic_page/.env.example to .env and fill it in locally
+.env
+*.local
+
+# Local editor / AI tool state
+.claude/
+
+# OS cruft
+.DS_Store
+Thumbs.db
