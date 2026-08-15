@@ -1,93 +1,61 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import type { KeyboardEvent, RefObject } from 'react';
-import type { CharState } from '../lib/types';
 
 interface Props {
   passage: string;
-  index: number;
-  errorAt: number | null;
-  /** Total mistakes so far. Only used to re-trigger the shake on repeat misses. */
-  errorSeq: number;
-  /** Clock is running and not paused -- the only time keystrokes count. */
-  active: boolean;
+  typedCount: number;
+  wrongKey: boolean;
   paused: boolean;
   loading: boolean;
   inputRef: RefObject<HTMLInputElement | null>;
   onKey: (key: string) => void;
 }
 
-const CHAR_CLASS: Record<CharState, string> = {
-  // Typed correctly -- this is the "darker" state the test is built around.
-  done: 'text-ink',
-  // Cursor position, still waiting to be typed.
-  active: 'text-clay',
-  // Wrong key pressed here. Deliberately NOT darkened -- the character keeps the
-  // untyped colour and is flagged with a wash and a rule instead, so it can never
-  // be mistaken for one that has been typed correctly.
-  error:
-    'text-clay bg-ember-soft/55 rounded-[3px] underline decoration-ember-deep decoration-2 underline-offset-[3px]',
-  pending: 'text-clay',
-};
-
-// Fade both ends: once the view scrolls, the top line is sliced through the
-// middle of its glyphs and reads as a bug rather than as more text above.
-const MASK = 'linear-gradient(to bottom, transparent 0%, #000 11%, #000 87%, transparent 100%)';
-
-/** Words stay whole: each token is an inline-block so lines break between words. */
-function useTokens(passage: string) {
-  return useMemo(() => {
-    const parts = passage.split(' ');
-    let start = 0;
-    return parts.map((word, i) => {
-      const text = i < parts.length - 1 ? `${word} ` : word;
-      const token = { text, start };
-      start += text.length;
-      return token;
-    });
-  }, [passage]);
-}
-
+// The text you type. Every character is its own <span> so we can colour them
+// one at a time as you go.
 export function Passage({
   passage,
-  index,
-  errorAt,
-  errorSeq,
-  active,
+  typedCount,
+  wrongKey,
   paused,
   loading,
   inputRef,
   onKey,
 }: Props) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const activeRef = useRef<HTMLSpanElement>(null);
-  const [focused, setFocused] = useState(false);
-  const tokens = useTokens(passage);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const cursorRef = useRef<HTMLSpanElement>(null);
 
-  // Keep the cursor line vertically centred as the typist works down the text.
+  // Scroll the box so the character you are on stays roughly in the middle.
   useEffect(() => {
-    const container = scrollRef.current;
-    const active = activeRef.current;
-    if (!container || !active) return;
-    const target = active.offsetTop - container.clientHeight / 2 + active.offsetHeight / 2;
-    container.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
-  }, [index]);
+    const box = boxRef.current;
+    const cursor = cursorRef.current;
 
-  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    // Leave browser and OS shortcuts alone.
-    if (event.metaKey || event.ctrlKey || event.altKey) return;
-    if (event.key === 'Tab') return;
+    if (box && cursor) {
+      box.scrollTop = cursor.offsetTop - box.clientHeight / 2;
+    }
+  }, [typedCount]);
+
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    // Leave browser shortcuts like Ctrl+R and tabbing away alone.
+    if (event.ctrlKey || event.metaKey || event.altKey || event.key === 'Tab') return;
+
     event.preventDefault();
     onKey(event.key);
-  };
+  }
 
-  const stateFor = (charIndex: number): CharState => {
-    if (charIndex < index) return 'done';
-    if (charIndex === index) return errorAt === index ? 'error' : 'active';
-    return 'pending';
-  };
+  function classForChar(position: number): string {
+    if (position < typedCount) return 'text-ink'; // typed correctly
+    if (position > typedCount) return 'text-clay'; // not reached yet
 
-  const showFocusPrompt = active && !focused;
-  const obscured = showFocusPrompt || paused;
+    // This is where the cursor is. If the last key was wrong we highlight it
+    // in red but leave the character light, so a mistake can never look like
+    // progress.
+    return wrongKey ? 'rounded-sm bg-ember-soft text-ember-deep' : 'rounded-sm bg-clay-faint text-ink-soft';
+  }
+
+  // Split into words so a word is never broken across two lines.
+  const words = passage.split(' ');
+  let position = 0;
 
   return (
     <section
@@ -95,42 +63,34 @@ export function Passage({
       onClick={() => !paused && inputRef.current?.focus()}
     >
       <div
-        ref={scrollRef}
-        style={{ maskImage: MASK, WebkitMaskImage: MASK }}
-        className={`h-[19.25rem] overflow-hidden font-mono text-[19px] leading-[2.1] tracking-[0.01em] transition-[opacity,filter] duration-300 ease-out sm:text-[21px] ${
-          obscured ? 'opacity-30 blur-[2px]' : 'opacity-100'
+        ref={boxRef}
+        className={`h-[19.25rem] overflow-hidden font-mono text-[19px] leading-[2.1] sm:text-[21px] ${
+          paused ? 'opacity-30' : ''
         }`}
       >
         {loading ? (
-          <p className="text-clay">Loading quotes…</p>
+          <p className="text-clay">Loading quotes...</p>
         ) : (
-          tokens.map((token) => (
-            <span key={token.start} className="inline-block whitespace-pre">
-              {[...token.text].map((char, offset) => {
-                const charIndex = token.start + offset;
-                const state = stateFor(charIndex);
-                const isCursor = state === 'active' || state === 'error';
-                return (
+          words.map((word, i) => {
+            // Keep the space that followed the word, except on the last one.
+            const text = i < words.length - 1 ? `${word} ` : word;
+            const start = position;
+            position += text.length;
+
+            return (
+              <span key={start} className="inline-block whitespace-pre">
+                {[...text].map((char, offset) => (
                   <span
-                    // Remounting on each fresh mistake replays the shake.
-                    key={state === 'error' ? `${charIndex}-e${errorSeq}` : charIndex}
-                    ref={isCursor ? activeRef : undefined}
-                    className={`relative ${CHAR_CLASS[state]}`}
-                    style={state === 'error' ? { animation: 'shake 140ms ease-in-out' } : undefined}
+                    key={start + offset}
+                    ref={start + offset === typedCount ? cursorRef : undefined}
+                    className={classForChar(start + offset)}
                   >
-                    {isCursor && active && (
-                      <span
-                        aria-hidden="true"
-                        className="absolute -left-[2px] top-[0.22em] h-[1.25em] w-[2px] rounded-full bg-ember"
-                        style={{ animation: 'caret-blink 1.05s steps(1, end) infinite' }}
-                      />
-                    )}
                     {char}
                   </span>
-                );
-              })}
-            </span>
-          ))
+                ))}
+              </span>
+            );
+          })
         )}
       </div>
 
@@ -142,27 +102,14 @@ export function Passage({
         </div>
       )}
 
-      {showFocusPrompt && (
-        <button
-          type="button"
-          onClick={() => inputRef.current?.focus()}
-          className="absolute inset-0 flex items-center justify-center rounded-2xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember"
-        >
-          <span className="rounded-full border border-clay-faint bg-paper-raised px-5 py-2.5 text-sm font-medium text-ink-soft">
-            Click here to keep typing
-          </span>
-        </button>
-      )}
-
-      {/* Visually hidden, but a real focusable input so mobile keyboards open. */}
+      {/* A real input, hidden off to the side. We need one so that typing has
+          somewhere to go and so mobile keyboards open when you tap the box. */}
       <input
         ref={inputRef}
         type="text"
         value=""
         onChange={() => undefined}
         onKeyDown={handleKeyDown}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
         autoComplete="off"
         autoCorrect="off"
         autoCapitalize="off"

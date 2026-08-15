@@ -1,162 +1,195 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { HistoryList } from './components/HistoryList';
 import { Passage } from './components/Passage';
 import { ResultModal } from './components/ResultModal';
-import { ScoreBox } from './components/ScoreBox';
-import { TimerBox } from './components/TimerBox';
-import { useCountdown } from './hooks/useCountdown';
-import { useTypingEngine } from './hooks/useTypingEngine';
 import { fetchHealth, fetchQuotes, fetchResults, saveResult } from './lib/api';
-import type { SourceInfo, StoreId, TestResult } from './lib/types';
+import type { SourceInfo, StoreId, TestResult } from './lib/api';
 
 const DURATION_SEC = 60;
+// How many quotes we join together to make the text you type.
+const QUOTES_PER_PASSAGE = 12;
 
 const PRIMARY_BUTTON =
-  'rounded-full bg-ember px-6 py-3 text-sm font-semibold text-paper-raised transition-transform duration-200 ease-spring hover:-translate-y-0.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember-deep active:translate-y-0 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50';
+  'rounded-full bg-ember px-6 py-3 text-sm font-semibold text-paper-raised transition-colors duration-200 hover:bg-ember-deep focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember-deep active:bg-ember-deep disabled:cursor-not-allowed disabled:opacity-50';
 
 const SECONDARY_BUTTON =
-  'rounded-full border border-clay-faint bg-paper-raised px-6 py-3 text-sm font-semibold text-ink-soft transition-transform duration-200 ease-spring hover:-translate-y-0.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember active:translate-y-0 active:scale-[0.98]';
+  'rounded-full border border-clay-faint bg-paper-raised px-6 py-3 text-sm font-semibold text-ink-soft transition-colors duration-200 hover:border-clay focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember active:border-clay';
+
+// Picks random quotes and joins them into one long block of text to type.
+function buildPassage(quotes: string[], count: number): string {
+  if (quotes.length === 0) return '';
+
+  const picked: string[] = [];
+  for (let i = 0; i < count; i++) {
+    picked.push(quotes[Math.floor(Math.random() * quotes.length)]);
+  }
+
+  return picked.join(' ');
+}
 
 export default function App() {
-  const [quotes, setQuotes] = useState<readonly string[]>([]);
-  const [quotesLoading, setQuotesLoading] = useState(true);
+  const [quotes, setQuotes] = useState<string[]>([]);
+  const [loadingQuotes, setLoadingQuotes] = useState(true);
 
+  // The text to type, and how far through it you are. The cursor only moves
+  // on a correct key, so typedCount is also your number of correct characters.
+  const [passage, setPassage] = useState('');
+  const [typedCount, setTypedCount] = useState(0);
+  const [mistakes, setMistakes] = useState(0);
+  const [wrongKey, setWrongKey] = useState(false);
+
+  const [secondsLeft, setSecondsLeft] = useState(DURATION_SEC);
+  const [status, setStatus] = useState<'idle' | 'running' | 'paused' | 'done'>('idle');
+
+  const [showResult, setShowResult] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
+
+  // Past runs, and which database we are reading them from.
   const [results, setResults] = useState<TestResult[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(true);
-
-  // Which databases the server has open, and which one we are reading from.
+  const [loadingResults, setLoadingResults] = useState(true);
   const [sources, setSources] = useState<SourceInfo[]>([]);
   const [source, setSource] = useState<StoreId | null>(null);
 
-  const [modalOpen, setModalOpen] = useState(false);
-  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle');
-  const [finalScore, setFinalScore] = useState({ correctChars: 0, errors: 0 });
-
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const loadHistory = useCallback(async (from: StoreId | null) => {
+  const running = status === 'running';
+  const paused = status === 'paused';
+  const started = running || paused;
+
+  async function loadResults(from: StoreId | null) {
+    setLoadingResults(true);
     try {
-      const { results: rows } = await fetchResults(from);
-      setResults(rows);
+      const data = await fetchResults(from);
+      setResults(data.results);
     } catch (error) {
-      console.error('Could not load history:', error);
+      console.error('Could not load past runs:', error);
     } finally {
-      setHistoryLoading(false);
+      setLoadingResults(false);
     }
+  }
+
+  // Load the quotes once, when the page opens.
+  useEffect(() => {
+    fetchQuotes()
+      .then((data) => {
+        setQuotes(data.quotes);
+        setPassage(buildPassage(data.quotes, QUOTES_PER_PASSAGE));
+      })
+      .catch((error) => console.error('Could not load quotes:', error))
+      .finally(() => setLoadingQuotes(false));
   }, []);
 
-  /** Switch which database the list is read from, and reload it. */
-  const handleSelectSource = useCallback(
-    (next: StoreId) => {
-      setSource(next);
-      setHistoryLoading(true);
-      void loadHistory(next);
-    },
-    [loadHistory],
-  );
-
+  // Ask which databases are connected before reading, so the buttons on the
+  // past-runs list only offer databases the server can actually read from.
   useEffect(() => {
-    let cancelled = false;
-
-    fetchQuotes()
-      .then(({ quotes: fetched }) => {
-        if (!cancelled) setQuotes(fetched);
+    fetchHealth()
+      .then((data) => {
+        setSources(data.sources);
+        setSource(data.defaultSource);
+        loadResults(data.defaultSource);
       })
       .catch((error) => {
-        console.error('Could not load quotes:', error);
-      })
-      .finally(() => {
-        if (!cancelled) setQuotesLoading(false);
+        console.error('Could not reach the server:', error);
+        loadResults(null);
       });
+  }, []);
 
-    // Ask which databases are live before reading, so the toggle only ever
-    // offers a source the server can actually serve.
-    fetchHealth()
-      .then(async ({ sources: live, defaultSource }) => {
-        if (cancelled) return;
-        setSources(live);
-        setSource(defaultSource);
-        await loadHistory(defaultSource);
-      })
-      .catch(async (error) => {
-        console.error('Could not read server health:', error);
-        if (!cancelled) await loadHistory(null);
-      });
+  // Count down one second at a time while the test is running. Pausing stops
+  // the timer, and React runs the cleanup below to clear it.
+  useEffect(() => {
+    if (!running) return;
 
-    return () => {
-      cancelled = true;
-    };
-  }, [loadHistory]);
+    const timer = setInterval(() => {
+      setSecondsLeft((seconds) => Math.max(0, seconds - 1));
+    }, 1000);
 
-  // Read through refs so the countdown's completion handler always sees the
-  // current values without having to be rebuilt on every keystroke.
-  const scoreRef = useRef({ correctChars: 0, errors: 0 });
-  const sourceRef = useRef<StoreId | null>(null);
-  sourceRef.current = source;
+    return () => clearInterval(timer);
+  }, [running]);
 
-  const handleComplete = useCallback(async () => {
-    const { correctChars, errors } = scoreRef.current;
-    setFinalScore({ correctChars, errors });
-    setModalOpen(true);
+  // When the clock hits zero the test is over.
+  useEffect(() => {
+    if (running && secondsLeft === 0) {
+      finishTest();
+    }
+  }, [running, secondsLeft]);
+
+  // Add more text before a fast typist reaches the end of the passage.
+  useEffect(() => {
+    if (passage && typedCount > passage.length - 200) {
+      setPassage(`${passage} ${buildPassage(quotes, 8)}`);
+    }
+  }, [typedCount, passage, quotes]);
+
+  function startTest() {
+    setPassage(buildPassage(quotes, QUOTES_PER_PASSAGE));
+    setTypedCount(0);
+    setMistakes(0);
+    setWrongKey(false);
+    setSecondsLeft(DURATION_SEC);
+    setShowResult(false);
+    setSaveFailed(false);
+    setStatus('running');
+    inputRef.current?.focus();
+  }
+
+  function pauseTest() {
+    setStatus('paused');
+    // Drop focus so keys pressed while paused are ignored.
+    inputRef.current?.blur();
+  }
+
+  function resumeTest() {
+    setStatus('running');
+    inputRef.current?.focus();
+  }
+
+  async function finishTest() {
+    setStatus('done');
+    setShowResult(true);
     inputRef.current?.blur();
 
-    // A run where nobody typed is not a score. Show the result, but keep the
-    // zero out of the history list.
-    if (correctChars === 0) {
-      setSaveState('idle');
+    // A run where nothing was typed is not a score worth keeping.
+    if (typedCount === 0) return;
+
+    try {
+      await saveResult(typedCount, mistakes, DURATION_SEC);
+      await loadResults(source);
+    } catch (error) {
+      console.error('Could not save the result:', error);
+      setSaveFailed(true);
+    }
+  }
+
+  // Called for every key pressed in the hidden input.
+  function handleKey(key: string) {
+    if (!running) return;
+
+    if (key === 'Backspace') {
+      setTypedCount(Math.max(0, typedCount - 1));
+      setWrongKey(false);
       return;
     }
 
-    setSaveState('saving');
+    // Anything longer than one character is a key like Shift or ArrowLeft.
+    if (key.length !== 1) return;
 
-    try {
-      // One request; the server writes it to every configured database.
-      await saveResult({ correctChars, errors, durationSec: DURATION_SEC });
-      setSaveState('saved');
-      await loadHistory(sourceRef.current);
-    } catch (error) {
-      console.error('Could not save result:', error);
-      setSaveState('failed');
+    if (key === passage[typedCount]) {
+      setTypedCount(typedCount + 1);
+      setWrongKey(false);
+    } else {
+      // Wrong key: count the mistake but do not move the cursor forward.
+      setMistakes(mistakes + 1);
+      setWrongKey(true);
     }
-  }, [loadHistory]);
+  }
 
-  const { remaining, running, paused, start, pause, resume, reset: resetClock } = useCountdown({
-    durationSec: DURATION_SEC,
-    onComplete: handleComplete,
-  });
+  function chooseSource(next: StoreId) {
+    setSource(next);
+    loadResults(next);
+  }
 
-  const active = running && !paused;
-  const engine = useTypingEngine({ quotes, active });
-  scoreRef.current = { correctChars: engine.correctChars, errors: engine.errors };
-
-  const handleStart = useCallback(() => {
-    engine.reset();
-    setSaveState('idle');
-    start();
-    inputRef.current?.focus();
-  }, [engine, start]);
-
-  const handlePause = useCallback(() => {
-    pause();
-    // Drop focus so stray keystrokes cannot queue up behind the pause.
-    inputRef.current?.blur();
-  }, [pause]);
-
-  const handleResume = useCallback(() => {
-    resume();
-    inputRef.current?.focus();
-  }, [resume]);
-
-  const handleRestart = useCallback(() => {
-    setModalOpen(false);
-    resetClock();
-    handleStart();
-  }, [handleStart, resetClock]);
-
-  const finalAccuracy =
-    finalScore.correctChars + finalScore.errors === 0
-      ? 0
-      : finalScore.correctChars / (finalScore.correctChars + finalScore.errors);
+  const totalKeystrokes = typedCount + mistakes;
+  const accuracy = totalKeystrokes === 0 ? 0 : typedCount / totalKeystrokes;
 
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-5 py-12 sm:px-8 sm:py-16">
@@ -170,22 +203,27 @@ export default function App() {
       </header>
 
       <div className="flex flex-wrap gap-3">
-        {!running && (
-          <button type="button" onClick={handleStart} disabled={quotesLoading} className={PRIMARY_BUTTON}>
+        {!started && (
+          <button
+            type="button"
+            onClick={startTest}
+            disabled={loadingQuotes}
+            className={PRIMARY_BUTTON}
+          >
             Start test
           </button>
         )}
 
-        {running && (
+        {started && (
           <>
             <button
               type="button"
-              onClick={paused ? handleResume : handlePause}
+              onClick={paused ? resumeTest : pauseTest}
               className={PRIMARY_BUTTON}
             >
               {paused ? 'Resume' : 'Pause'}
             </button>
-            <button type="button" onClick={handleStart} className={SECONDARY_BUTTON}>
+            <button type="button" onClick={startTest} className={SECONDARY_BUTTON}>
               Restart
             </button>
           </>
@@ -193,28 +231,50 @@ export default function App() {
       </div>
 
       <div className="flex flex-col gap-4 sm:flex-row">
-        <TimerBox remaining={remaining} paused={paused} />
-        <ScoreBox correctChars={engine.correctChars} errors={engine.errors} />
+        {/* The countdown. */}
+        <div className="flex aspect-square w-[150px] shrink-0 flex-col items-center justify-center rounded-2xl border border-clay-faint/70 bg-paper-raised">
+          <span
+            className={`font-display text-[58px] leading-none tracking-[-0.03em] tabular-nums ${
+              secondsLeft <= 10 ? 'text-ember-deep' : 'text-ink'
+            }`}
+          >
+            {secondsLeft}
+          </span>
+          <span className="mt-2 text-[10px] font-medium uppercase tracking-[0.2em] text-clay">
+            {paused ? 'Paused' : 'Seconds'}
+          </span>
+        </div>
+
+        {/* The live score. */}
+        <div className="flex min-w-0 flex-1 flex-col justify-center gap-1.5 rounded-2xl border border-clay-faint/70 bg-paper-raised px-6 py-5">
+          <span className="text-[10px] font-medium uppercase tracking-[0.2em] text-clay">
+            Correct characters
+          </span>
+          <span className="font-display text-[58px] leading-none tracking-[-0.03em] tabular-nums text-ember">
+            {typedCount}
+          </span>
+          <span className="text-xs text-clay">
+            {mistakes} {mistakes === 1 ? 'mistake' : 'mistakes'}
+          </span>
+        </div>
       </div>
 
       <Passage
-        passage={engine.passage}
-        index={engine.index}
-        errorAt={engine.errorAt}
-        errorSeq={engine.errors}
-        active={active}
+        passage={passage}
+        typedCount={typedCount}
+        wrongKey={wrongKey}
         paused={paused}
-        loading={quotesLoading}
+        loading={loadingQuotes}
         inputRef={inputRef}
-        onKey={engine.handleKey}
+        onKey={handleKey}
       />
 
       <HistoryList
         results={results}
-        loading={historyLoading}
+        loading={loadingResults}
         sources={sources}
         activeSource={source}
-        onSelectSource={handleSelectSource}
+        onChooseSource={chooseSource}
       />
 
       <footer className="pb-2 text-xs text-clay">
@@ -229,16 +289,17 @@ export default function App() {
         </a>
       </footer>
 
-      <ResultModal
-        open={modalOpen}
-        wpm={Math.round(finalScore.correctChars / 5)}
-        correctChars={finalScore.correctChars}
-        errors={finalScore.errors}
-        accuracy={finalAccuracy}
-        saveState={saveState}
-        onClose={() => setModalOpen(false)}
-        onRestart={handleRestart}
-      />
+      {showResult && (
+        <ResultModal
+          wpm={Math.round(typedCount / 5)}
+          correctChars={typedCount}
+          mistakes={mistakes}
+          accuracy={accuracy}
+          saveFailed={saveFailed}
+          onClose={() => setShowResult(false)}
+          onRestart={startTest}
+        />
+      )}
     </main>
   );
 }

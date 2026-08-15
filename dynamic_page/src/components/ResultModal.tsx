@@ -1,44 +1,40 @@
 import { useEffect, useRef } from 'react';
 
 interface Props {
-  open: boolean;
   wpm: number;
   correctChars: number;
-  errors: number;
-  /** 0..1 */
-  accuracy: number;
-  saveState: 'saving' | 'saved' | 'failed' | 'idle';
+  mistakes: number;
+  accuracy: number; // 0 to 1
+  saveFailed: boolean;
   onClose: () => void;
   onRestart: () => void;
 }
 
+// The popup that shows your score when the clock runs out.
 export function ResultModal({
-  open,
   wpm,
   correctChars,
-  errors,
+  mistakes,
   accuracy,
-  saveState,
+  saveFailed,
   onClose,
   onRestart,
 }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!open) return;
-    // Focus the panel, never a button. The typist is mid-flow when the clock
-    // runs out, and their next keystroke -- very often a space -- would
-    // activate a focused button and restart the test before they read a thing.
+    // Focus the panel rather than a button. You are still typing when the
+    // clock runs out, and your next key (usually a space) would press a
+    // focused button and restart the test before you read anything.
     panelRef.current?.focus();
 
-    const onKeyDown = (event: KeyboardEvent) => {
+    function handleEscape(event: globalThis.KeyboardEvent) {
       if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, onClose]);
+    }
 
-  if (!open) return null;
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [onClose]);
 
   return (
     <div
@@ -47,13 +43,13 @@ export function ResultModal({
       aria-modal="true"
       aria-labelledby="result-title"
     >
+      {/* Dimmed background. Clicking it closes the popup. */}
       <div className="absolute inset-0 bg-ink/45" onClick={onClose} />
 
       <div
         ref={panelRef}
         tabIndex={-1}
         className="relative w-full max-w-sm rounded-2xl border border-clay-faint/70 bg-paper-raised p-7 shadow-float outline-none"
-        style={{ animation: 'rise-in 260ms cubic-bezier(0.34, 1.56, 0.64, 1)' }}
       >
         <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-ember">Time is up</p>
 
@@ -65,11 +61,11 @@ export function ResultModal({
         </h2>
 
         <p className="mt-3 text-sm leading-[1.7] text-ink-soft">
-          {correctChars} correct characters, {errors} {errors === 1 ? 'mistake' : 'mistakes'},{' '}
+          {correctChars} correct characters, {mistakes} {mistakes === 1 ? 'mistake' : 'mistakes'},{' '}
           {Math.round(accuracy * 100)}% accuracy.
         </p>
 
-        {saveState === 'failed' && (
+        {saveFailed && (
           <p className="mt-3 text-xs text-ember-deep">
             Could not reach the server, so this run was not saved.
           </p>
@@ -79,14 +75,14 @@ export function ResultModal({
           <button
             type="button"
             onClick={onRestart}
-            className="flex-1 rounded-full bg-ember px-6 py-3 text-sm font-semibold text-paper-raised transition-transform duration-200 ease-spring hover:-translate-y-0.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember-deep active:translate-y-0 active:scale-[0.98]"
+            className="flex-1 rounded-full bg-ember px-6 py-3 text-sm font-semibold text-paper-raised transition-colors duration-200 hover:bg-ember-deep focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember-deep active:bg-ember-deep"
           >
             Try again
           </button>
           <button
             type="button"
             onClick={onClose}
-            className="flex-1 rounded-full border border-clay-faint bg-paper px-6 py-3 text-sm font-semibold text-ink-soft transition-transform duration-200 ease-spring hover:-translate-y-0.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember active:translate-y-0 active:scale-[0.98]"
+            className="flex-1 rounded-full border border-clay-faint bg-paper px-6 py-3 text-sm font-semibold text-ink-soft transition-colors duration-200 hover:border-clay focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember active:border-clay"
           >
             Close
           </button>

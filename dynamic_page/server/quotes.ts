@@ -2,103 +2,97 @@ import { FALLBACK_QUOTES } from './fallbackQuotes.js';
 
 const ZENQUOTES_URL = 'https://zenquotes.io/api/quotes';
 
-/**
- * zenquotes.io allows roughly 5 requests per 30 seconds per IP. We fetch once
- * and serve every browser from this cache so a room full of users cannot trip
- * that limit.
- */
+// How long we trust our cached quotes before fetching new ones (5 minutes).
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 export type QuoteSource = 'zenquotes' | 'fallback';
-
-let cache: { quotes: string[]; source: QuoteSource; fetchedAt: number } | null = null;
-let inFlight: Promise<string[]> | null = null;
-
-interface ZenQuote {
-  q?: unknown;
-  a?: unknown;
-}
-
-/**
- * Curly quotes, em dashes and exotic spaces cannot be produced by a plain
- * keypress, so a passage containing them would be impossible to type. Fold them
- * down to ASCII and drop anything else outside the printable range.
- */
-function toTypeableAscii(text: string): string {
-  return (
-    text
-      .replace(/[‘’‛′]/g, "'")
-      .replace(/[“”‟″]/g, '"')
-      .replace(/[‐-―−]/g, '-')
-      .replace(/…/g, '...')
-      // Exotic spaces must become real spaces *before* the ASCII filter below,
-      // otherwise they are deleted outright and two words fuse together.
-      .replace(/[  -   　]/g, ' ')
-      .replace(/[^\x20-\x7E]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-  );
-}
-
-function isUsable(quote: string): boolean {
-  return quote.length >= 20 && quote.length <= 220;
-}
-
-async function fetchFromZenQuotes(): Promise<string[]> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
-
-  try {
-    const response = await fetch(ZENQUOTES_URL, { signal: controller.signal });
-    if (!response.ok) throw new Error(`zenquotes responded ${response.status}`);
-
-    const payload: unknown = await response.json();
-    if (!Array.isArray(payload)) throw new Error('zenquotes did not return an array');
-
-    const quotes = (payload as ZenQuote[])
-      .map((entry) => (typeof entry.q === 'string' ? toTypeableAscii(entry.q) : ''))
-      .filter(isUsable);
-
-    // zenquotes reports rate limiting as a single-element array, so a thin
-    // response is a failure -- serving it would mean a one-line passage.
-    if (quotes.length < 5) throw new Error('zenquotes returned too few usable quotes');
-
-    return quotes;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
 
 export interface QuotesResult {
   quotes: string[];
   source: QuoteSource;
 }
 
-export async function getQuotes(): Promise<QuotesResult> {
-  if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
-    return { quotes: cache.quotes, source: cache.source };
+// Simple in-memory cache. Starts empty.
+let cachedQuotes: string[] | null = null;
+let cachedSource: QuoteSource | null = null;
+let cachedAt = 0;
+
+/**
+ * Quotes from the internet often contain "fancy" characters (curly quotes,
+ * em dashes, etc.) that you can't type on a normal keyboard. This function
+ * replaces them with plain, typeable versions.
+ */
+function toTypeableAscii(text: string): string {
+  return text
+    .replace(/[‘’]/g, "'") // curly single quotes -> straight quote
+    .replace(/[“”]/g, '"') // curly double quotes -> straight quote
+    .replace(/[–—]/g, '-') // en/em dash -> hyphen
+    .replace(/…/g, '...') // ellipsis character -> three dots
+    .replace(/[^ -~]/g, '') // drop anything else a keyboard can't produce
+    .replace(/\s+/g, ' ') // collapse extra whitespace
+    .trim();
+}
+
+// Only keep quotes that are a reasonable length to type.
+function isUsable(quote: string): boolean {
+  return quote.length >= 20 && quote.length <= 220;
+}
+
+/**
+ * Calls the ZenQuotes API and returns a cleaned-up list of quote strings.
+ * Throws an error if the request fails or the response looks bad.
+ */
+async function fetchFromZenQuotes(): Promise<string[]> {
+  const response = await fetch(ZENQUOTES_URL);
+
+  if (!response.ok) {
+    throw new Error(`ZenQuotes responded with status ${response.status}`);
   }
 
-  // Collapse concurrent cache misses into a single upstream request.
-  if (!inFlight) {
-    inFlight = fetchFromZenQuotes().finally(() => {
-      inFlight = null;
-    });
+  const data = await response.json();
+
+  if (!Array.isArray(data)) {
+    throw new Error('Unexpected response shape from ZenQuotes');
+  }
+
+  const quotes = data
+    .map((entry) => (typeof entry.q === 'string' ? toTypeableAscii(entry.q) : ''))
+    .filter(isUsable);
+
+  // ZenQuotes answers a rate-limited request with a single-item array, so a
+  // very short list means we got an error message rather than real quotes.
+  if (quotes.length < 5) {
+    throw new Error('Not enough usable quotes in the response');
+  }
+
+  return quotes;
+}
+
+/**
+ * Returns a list of quotes, using the cache if it's still fresh,
+ * fetching from ZenQuotes if not, and falling back to local quotes
+ * if the fetch fails.
+ */
+export async function getQuotes(): Promise<QuotesResult> {
+  const cacheIsFresh = cachedQuotes && Date.now() - cachedAt < CACHE_TTL_MS;
+
+  if (cacheIsFresh) {
+    return { quotes: cachedQuotes!, source: cachedSource! };
   }
 
   try {
-    const quotes = await inFlight;
-    cache = { quotes, source: 'zenquotes', fetchedAt: Date.now() };
+    const quotes = await fetchFromZenQuotes();
+    cachedQuotes = quotes;
+    cachedSource = 'zenquotes';
+    cachedAt = Date.now();
     return { quotes, source: 'zenquotes' };
   } catch (error) {
-    console.warn(
-      '[quotes] zenquotes.io unavailable, serving fallback quotes:',
-      (error as Error).message,
-    );
+    console.warn('ZenQuotes fetch failed, using fallback quotes:', error);
+
     const quotes = FALLBACK_QUOTES.map(toTypeableAscii);
-    // Cache the fallback too, so a sustained outage does not mean a failed
-    // upstream call on every single page load.
-    cache = { quotes, source: 'fallback', fetchedAt: Date.now() };
+    cachedQuotes = quotes;
+    cachedSource = 'fallback';
+    cachedAt = Date.now();
     return { quotes, source: 'fallback' };
   }
 }

@@ -1,17 +1,15 @@
-import type { SourceInfo, StoreId, TestResult } from '../lib/types';
+import type { SourceInfo, StoreId, TestResult } from '../lib/api';
 
 interface Props {
   results: TestResult[];
   loading: boolean;
   sources: SourceInfo[];
   activeSource: StoreId | null;
-  onSelectSource: (source: StoreId) => void;
+  onChooseSource: (source: StoreId) => void;
 }
 
-function formatTime(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '—';
-  return date.toLocaleString(undefined, {
+function formatTime(isoDate: string): string {
+  return new Date(isoDate).toLocaleString(undefined, {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
@@ -19,8 +17,9 @@ function formatTime(iso: string): string {
   });
 }
 
-/** Past runs, newest first: when you took it, and how fast you were. */
-export function HistoryList({ results, loading, sources, activeSource, onSelectSource }: Props) {
+// The list of past runs: when you took the test, and how fast you were.
+export function HistoryList({ results, loading, sources, activeSource, onChooseSource }: Props) {
+  // The server sends oldest first, but the newest run is the interesting one.
   const newestFirst = [...results].reverse();
   const usingMemory = sources.some((source) => source.id === 'memory');
 
@@ -29,40 +28,36 @@ export function HistoryList({ results, loading, sources, activeSource, onSelectS
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="font-display text-2xl leading-none tracking-[-0.02em] text-ink">Past runs</h2>
 
-        {/* One button per live database. The same rows should appear under each. */}
+        {/* One button per connected database. The same runs should show up
+            under each one, because every run is saved to all of them. */}
         {sources.length > 1 && (
           <div
             className="flex gap-1 rounded-full border border-clay-faint/70 bg-paper p-1"
             role="group"
-            aria-label="Read history from"
+            aria-label="Read past runs from"
           >
-            {sources.map((source) => {
-              const selected = source.id === activeSource;
-              return (
-                <button
-                  key={source.id}
-                  type="button"
-                  onClick={() => onSelectSource(source.id)}
-                  aria-pressed={selected}
-                  className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition-transform duration-200 ease-spring focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember active:scale-[0.97] ${
-                    selected
-                      ? 'bg-ember text-paper-raised'
-                      : 'text-clay hover:text-ink'
-                  }`}
-                >
-                  {source.label}
-                </button>
-              );
-            })}
+            {sources.map((source) => (
+              <button
+                key={source.id}
+                type="button"
+                onClick={() => onChooseSource(source.id)}
+                aria-pressed={source.id === activeSource}
+                className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ember ${
+                  source.id === activeSource
+                    ? 'bg-ember text-paper-raised'
+                    : 'text-clay hover:text-ink active:text-ink'
+                }`}
+              >
+                {source.label}
+              </button>
+            ))}
           </div>
         )}
 
-        {sources.length === 1 && (
-          <span className="text-xs text-clay">from {sources[0].label}</span>
-        )}
+        {sources.length === 1 && <span className="text-xs text-clay">from {sources[0].label}</span>}
       </div>
 
-      {loading && <p className="mt-5 text-sm text-clay">Loading…</p>}
+      {loading && <p className="mt-5 text-sm text-clay">Loading...</p>}
 
       {!loading && newestFirst.length === 0 && (
         <p className="mt-5 text-sm leading-[1.7] text-clay">
@@ -90,10 +85,10 @@ export function HistoryList({ results, loading, sources, activeSource, onSelectS
         </ul>
       )}
 
-      {usingMemory && !loading && (
+      {!loading && usingMemory && (
         <p className="mt-5 text-xs leading-relaxed text-clay">
-          No database configured — held in memory only. Set <code>MONGODB_URI</code> and/or{' '}
-          <code>DATABASE_URL</code> to keep this list.
+          No database configured, so these are held in memory only. Set <code>MONGODB_URI</code>{' '}
+          and/or <code>DATABASE_URL</code> to keep this list.
         </p>
       )}
     </section>

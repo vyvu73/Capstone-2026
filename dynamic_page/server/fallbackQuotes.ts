@@ -1,7 +1,5 @@
-/**
- * Used whenever zenquotes.io is unreachable or rate-limits us. The typing test
- * should never be blocked by a third-party outage, so we always have a passage.
- */
+// Used when the ZenQuotes API is down or has rate-limited us, so there is
+// always something to type.
 export const FALLBACK_QUOTES: string[] = [
   'The only way to do great work is to love what you do.',
   'Simplicity is the ultimate sophistication.',

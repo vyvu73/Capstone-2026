@@ -50,22 +50,19 @@ Two processes start together:
 ```
 index.html            Tailwind CDN + theme tokens + fonts
 src/
-  App.tsx             wires the clock, the engine, the modal and the chart
-  hooks/
-    useCountdown.ts   deadline-based 60s clock, pause/resume (does not drift)
-    useTypingEngine.ts passage building + the no-advance-on-error rule
-  components/         TimerBox, ScoreBox, Passage, ResultModal, HistoryList
-  lib/                api client + shared types
+  App.tsx             all the state: clock, typing, history, saving
+  components/
+    Passage.tsx       the text you type, coloured one character at a time
+    ResultModal.tsx   the score popup
+    HistoryList.tsx   past runs + the database toggle
+  lib/api.ts          every fetch call, plus the shared types
 server/
   index.ts            /api/health, /api/quotes, POST + GET /api/results
   quotes.ts           zenquotes proxy, 5-minute cache, ASCII folding
   fallbackQuotes.ts   used when zenquotes is unreachable
-  stores/
-    types.ts          the ResultStore contract both databases implement
-    mongoStore.ts     Atlas: document insert, sort by createdAt
-    postgresStore.ts  SQL: schema on boot, snake_case <-> camelCase mapping
-    memoryStore.ts    fallback when neither database is configured
-    index.ts          StoreRegistry -- fans writes out, reads from one source
+  db.ts               holds the connected databases, saves to all of them
+  mongo.ts            Atlas: document insert, sort by createdAt
+  postgres.ts         SQL: table on boot, snake_case <-> camelCase mapping
 ```
 
 ### Two more things worth knowing
@@ -103,7 +100,7 @@ are live:
 
 ```bash
 curl http://localhost:4000/api/health
-# {"sources":[{"id":"mongo","label":"MongoDB Atlas"},
+# {"sources":[{"id":"mongo","label":"MongoDB"},
 #             {"id":"postgres","label":"Postgres"}],"defaultSource":"mongo"}
 ```
 
@@ -115,7 +112,7 @@ curl http://localhost:4000/api/health
 4. **Connect** → **Drivers** → **Node.js** → copy the connection string.
 5. Paste it into `MONGODB_URI` in `.env`, replacing `<password>` with the real one.
    URL-encode any of `@ : / ? # [ ] %` in the password.
-6. Restart the server. You should see `[mongo] Connected to Atlas -> …`.
+6. Restart the server. You should see `Connected to MongoDB (…)`.
 
 The database and collection are created on first write; no setup needed there.
 
@@ -132,45 +129,38 @@ createdb typing_speed_test
 The `results` table and its index are created automatically on boot, so there is
 no migration step. TLS is enabled automatically for any non-localhost host, which
 is what hosted providers require. Restart and look for
-`[postgres] Connected and schema ready -> public.results`.
+`Connected to Postgres (public.results)`.
 
 ### How the two databases fit together
 
-The whole trick is one interface, `ResultStore` in `server/stores/types.ts`:
+The whole trick is one shared shape, `Store` in `server/db.ts`:
 
 ```ts
 insert(result: TestResult): Promise<void>
 recent(limit: number): Promise<TestResult[]>   // always oldest-first
 ```
 
-Mongo and Postgres each implement it, so the route handlers never learn which
-kind of database they are talking to. `StoreRegistry` holds every store that
-connected and does two things:
+`mongo.ts` and `postgres.ts` each return an object of that shape when they
+connect, and `null` when they are not configured. So the routes never learn
+which kind of database they are talking to. `db.ts` keeps the ones that
+connected in an array and does two things:
 
-- **Writes** go to all of them, via `Promise.allSettled` — not `Promise.all`.
-  One database being down must not lose the write to the other, and must not
-  fail the request. The response carries a per-store report:
-
-  ```json
-  { "result": { "wpm": 48, … },
-    "writes": [ {"store":"mongo","outcome":"ok"},
-                {"store":"postgres","outcome":"error","error":"…"} ] }
-  ```
-
+- **Writes** go to all of them. If one database is down the error is logged and
+  the loop carries on, so a failure there cannot lose the write to the other.
   The request only 500s if *every* database rejected it.
 
-- **Reads** come from one named store: `GET /api/results?source=postgres`.
-  An unknown or unconfigured source quietly falls back to the default rather
-  than erroring, and the response echoes which one actually served it.
+- **Reads** come from one named database: `GET /api/results?source=postgres`.
+  An unknown or unconfigured name quietly falls back to the first one rather
+  than erroring.
 
 Two details that matter for the data matching across both:
 
-- The `TestResult` is built **once** in the route, before the fan-out, so the
-  `createdAt` timestamp and derived `wpm` are byte-identical in both databases.
-  Deriving them per-store would drift.
-- `MongoStore.insert` spreads the object (`{ ...result }`) before handing it to
-  the driver, because the Mongo driver mutates its argument to attach `_id`.
-  Without the copy, Postgres would receive a polluted object.
+- The `TestResult` is built **once** in the route, before it is handed to the
+  databases, so the `createdAt` timestamp and the derived `wpm` are identical
+  in both. Working them out per database would let them drift.
+- Mongo's `insert` saves a copy (`{ ...result }`), because the Mongo driver
+  adds an `_id` to whatever object you give it. Without the copy, Postgres
+  would receive that polluted object next.
 
 ### Stored result
 
@@ -190,6 +180,6 @@ id BIGSERIAL | wpm INTEGER | correct_chars INTEGER | errors INTEGER
              | accuracy REAL | duration_sec INTEGER | created_at TIMESTAMPTZ
 ```
 
-Postgres columns are snake_case by convention; `postgresStore.ts` maps them back
-to the camelCase `TestResult` the rest of the app uses, so the API response is
+Postgres columns are snake_case by convention; `postgres.ts` maps them back to
+the camelCase `TestResult` the rest of the app uses, so the API response is
 identical no matter which database served it.
