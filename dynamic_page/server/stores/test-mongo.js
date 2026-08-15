@@ -5,6 +5,8 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const store = await createMongoStore();
+console.log("hello")
+console.log('MONGODB_URI:', process.env.MONGODB_URI ? '✅ Set' : '❌ Not set');
 
 if (store) {
   console.log('✅ MongoDB connected successfully!');
