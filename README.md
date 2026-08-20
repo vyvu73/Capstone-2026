@@ -26,22 +26,10 @@ npm run dev
 
 Both serve on port **3000**, so run them one at a time.
 
-## Two things worth knowing up front
 
-**The typing test needs no database.** It writes results to MongoDB and Postgres
-*if* you configure them, but with neither configured it falls back to an in-memory
-store and runs perfectly well — results just disappear when you restart the server.
-Setting up databases is an optional upgrade, covered in
-[dynamic_page/README.md](dynamic_page/README.md).
-
-**Both pages load Tailwind CSS and Google Fonts from a CDN**, so you need an
-internet connection for them to look right.
-
-## Where to go next
 
 - [`static_page/README.md`](static_page/README.md) — what's in the single HTML file
   and where to change the theme.
 - [`dynamic_page/README.md`](dynamic_page/README.md) — how the app is put together,
   the API routes, and optional database setup.
-- [`CLAUDE.md`](CLAUDE.md) — design instructions for AI coding sessions. Not needed
-  to run anything.
+
